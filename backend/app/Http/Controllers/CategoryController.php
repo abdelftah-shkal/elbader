@@ -2,83 +2,189 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Requests\StoreCategoryRequest;
+use App\Http\Requests\UpdateCategoryRequest;
+use App\Http\Requests\BulkDeleteCategoryRequest;
 use App\Models\Category;
-use Illuminate\Http\Request;
 use App\Services\CategoryService;
-use Illuminate\Support\Facades\DB;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\View\View;
+use Illuminate\Validation\ValidationException;
 
 class CategoryController extends Controller
 {
-    /**
-     * Display a listing of the resource.
-     */
-    protected $categoryService;
-
-    public function __construct(CategoryService $categoryService)
-    {
-        $this->categoryService = $categoryService;
+    public function __construct(
+        protected CategoryService $categoryService
+    ) {
     }
-    public function index(Request $request)
+
+    /**
+     * Display categories page.
+     */
+    public function index(Request $request): View
     {
         $categories = $this->categoryService->getPaginatedCategories(
             search: $request->input('search'),
-            categoryId: $request->filled('category_id') ? (int) $request->input('category_id') : null,
+            categoryId: $request->filled('category_id')
+            ? (int) $request->input('category_id')
+            : null,
             perPage: 10
         );
 
-        $allCategories = $this->categoryService->getAllCategories();
+        $allCategories = $this->categoryService
+            ->getAllCategories();
+
+        $tree = $this->categoryService
+            ->getTree();
 
         return view('categories.index', [
             'categories' => $categories,
             'allCategories' => $allCategories,
+            'tree' => $tree,
         ]);
     }
 
     /**
-     * Show the form for creating a new resource.
+     * Create category.
      */
-    public function create()
-    {
-        //
+    public function store(
+        StoreCategoryRequest $request
+    ): JsonResponse {
+        try {
+            $category = $this->categoryService->create(
+                $request->validated()
+            );
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Category created successfully.',
+                'data' => $category->load('parent'),
+            ], 201);
+
+        } catch (ValidationException $exception) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Unable to create category.',
+                'errors' => $exception->errors(),
+            ], 422);
+        }
     }
 
     /**
-     * Store a newly created resource in storage.
+     * Get category details for editing.
      */
-    public function store(Request $request)
+    public function show(Category $category): JsonResponse
     {
-        //
+        return response()->json([
+            'success' => true,
+            'data' => $category->load('parent'),
+        ]);
     }
 
     /**
-     * Display the specified resource.
+     * Update category.
      */
-    public function show(Category $category)
-    {
-        //
+    public function update(
+        UpdateCategoryRequest $request,
+        Category $category
+    ): JsonResponse {
+        try {
+            $category = $this->categoryService->update(
+                $category,
+                $request->validated()
+            );
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Category updated successfully.',
+                'data' => $category,
+            ]);
+
+        } catch (ValidationException $exception) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Unable to update category.',
+                'errors' => $exception->errors(),
+            ], 422);
+        }
     }
 
     /**
-     * Show the form for editing the specified resource.
+     * Delete one category.
      */
-    public function edit(Category $category)
-    {
-        //
+    public function destroy(
+        Category $category
+    ): JsonResponse {
+        try {
+            $this->categoryService->delete($category);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Category deleted successfully.',
+            ]);
+
+        } catch (ValidationException $exception) {
+            return response()->json([
+                'success' => false,
+                'message' => $exception->errors()['category'][0]
+                    ?? 'Unable to delete category.',
+                'errors' => $exception->errors(),
+            ], 422);
+        }
     }
 
     /**
-     * Update the specified resource in storage.
+     * Delete multiple categories.
      */
-    public function update(Request $request, Category $category)
-    {
-        //
+    public function bulkDestroy(
+        BulkDeleteCategoryRequest $request
+    ): JsonResponse {
+        try {
+            $this->categoryService->bulkDelete(
+                $request->validated('ids')
+            );
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Categories deleted successfully.',
+            ]);
+
+        } catch (ValidationException $exception) {
+            return response()->json([
+                'success' => false,
+                'message' => $exception->errors()['ids'][0]
+                    ?? 'Unable to delete categories.',
+                'errors' => $exception->errors(),
+            ], 422);
+        }
     }
 
     /**
-     * Remove the specified resource from storage.
+     * Get available parent categories.
      */
-    public function destroy(Category $category)
+    public function parents(
+        ?Category $category = null
+    ): JsonResponse {
+        $parents = $this->categoryService
+            ->getAvailableParents($category);
+
+        return response()->json([
+            'success' => true,
+            'data' => $parents,
+        ]);
+    }
+
+    /**
+     * Get category tree.
+     */
+    public function tree(): JsonResponse
     {
-        //
+        $tree = $this->categoryService->getTree();
+
+        return response()->json([
+            'success' => true,
+            'data' => $tree,
+        ]);
     }
 }
