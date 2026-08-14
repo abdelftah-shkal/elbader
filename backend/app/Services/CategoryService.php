@@ -61,7 +61,7 @@ class CategoryService
          * Filter by selected category and all its descendants.
          */
         if ($categoryId !== null) {
-            $category = Category::find($categoryId);
+            $category = $this->allCategories()->firstWhere('id', $categoryId);
 
             if ($category) {
                 $descendantIds = $this->getDescendantIds($category);
@@ -380,7 +380,7 @@ class CategoryService
             return;
         }
 
-        $parent = Category::find($parentId);
+        $parent = $this->allCategories()->firstWhere('id', $parentId);
 
         if (!$parent) {
             throw ValidationException::withMessages([
@@ -448,8 +448,9 @@ class CategoryService
      */
     private function isDuplicateKeyException(QueryException $e): bool
     {
-        $sqlState = $e->errorInfo[0] ?? $e->getCode();
+        $sqlState = (string) ($e->errorInfo[0] ?? $e->getCode());
         return $sqlState === '23000'
+            || $sqlState === '23505'
             || str_contains($e->getMessage(), 'UNIQUE constraint failed')
             || str_contains($e->getMessage(), 'Duplicate entry');
     }

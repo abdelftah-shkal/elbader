@@ -215,4 +215,87 @@ class CategoryServiceTest extends TestCase
         $this->expectException(ValidationException::class);
         $service->bulkDelete([$cat1->id, 99999]);
     }
+
+    public function test_category_service_uses_single_hierarchy_query_per_request_cache(): void
+    {
+        $electronics = Category::create(['name' => 'Electronics']);
+        $phones = Category::create(['name' => 'Phones', 'parent_id' => $electronics->id]);
+        Category::create(['name' => 'Android', 'parent_id' => $phones->id]);
+
+        $service = new CategoryService();
+
+        DB::enableQueryLog();
+
+        // 1. getPaginatedCategories with categoryId filter (populates and uses allCategories cache)
+        $service->getPaginatedCategories(categoryId: $electronics->id);
+
+        // 2. getAllCategories (uses cache)
+        $service->getAllCategories();
+
+        // 3. getTree (uses cache)
+        $service->getTree();
+
+        // 4. getAvailableParents (uses cache)
+        $service->getAvailableParents($phones);
+
+        $queries = DB::getQueryLog();
+        DB::disableQueryLog();
+
+        // Filter queries that fetch all categories without WHERE (i.e., allCategories query)
+        $allCategoriesQueries = array_filter($queries, function ($q) {
+            $sql = strtolower($q['query']);
+            return str_contains($sql, 'select')
+                && (str_contains($sql, 'from "categories"') || str_contains($sql, 'from `categories`'))
+                && !str_contains($sql, 'where');
+        });
+
+        // Exactly 1 allCategories query executed across all 4 service calls
+        $this->assertCount(1, $allCategoriesQueries);
+    }
+
+    public function test_database_unique_constraint_handling(): void
+    {
+        $electronics = Category::create(['name' => 'Electronics']);
+
+        // Test database unique constraint violation handling when a duplicate row exists
+        DB::table('categories')->insert([
+            'name' => 'DuplicateName',
+            'parent_id' => $electronics->id,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $service = new CategoryService();
+
+        try {
+            // Attempting to create duplicate category under same parent throws ValidationException
+            $service->create(['name' => 'DuplicateName', 'parent_id' => $electronics->id]);
+            $this->fail('Expected ValidationException due to duplicate name under same parent');
+        } catch (ValidationException $e) {
+            $this->assertArrayHasKey('name', $e->errors());
+        }
+    }
+
+    public function test_get_available_parents_excludes_self_and_descendants(): void
+    {
+        $electronics = Category::create(['name' => 'Electronics']);
+        $phones = Category::create(['name' => 'Phones', 'parent_id' => $electronics->id]);
+        $android = Category::create(['name' => 'Android', 'parent_id' => $phones->id]);
+        $clothing = Category::create(['name' => 'Clothing']);
+
+        $service = new CategoryService();
+
+        // When category is null, returns all categories
+        $allParents = $service->getAvailableParents(null);
+        $this->assertCount(4, $allParents);
+
+        // When editing 'Phones', excludes Phones (self) and Android (descendant)
+        $availableForPhones = $service->getAvailableParents($phones);
+        $ids = $availableForPhones->pluck('id')->all();
+
+        $this->assertContains($electronics->id, $ids);
+        $this->assertContains($clothing->id, $ids);
+        $this->assertNotContains($phones->id, $ids);
+        $this->assertNotContains($android->id, $ids);
+    }
 }

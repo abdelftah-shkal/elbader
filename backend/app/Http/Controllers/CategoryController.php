@@ -29,7 +29,9 @@ class CategoryController extends Controller
             categoryId: $request->filled('category_id')
                 ? (int) $request->input('category_id')
                 : null,
-            perPage: 10
+            perPage: $request->filled('per_page')
+                ? (int) $request->input('per_page')
+                : 10
         );
 
         if ($request->ajax() || $request->header('X-Requested-With') === 'XMLHttpRequest') {
