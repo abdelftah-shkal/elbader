@@ -3,6 +3,7 @@
 namespace Tests\Unit;
 
 use App\Models\Category;
+use App\Repositories\CategoryRepository;
 use App\Services\CategoryService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Pagination\LengthAwarePaginator;
@@ -14,14 +15,21 @@ class CategoryServiceTest extends TestCase
 {
     use RefreshDatabase;
 
+    /**
+     * Create a CategoryService with a real CategoryRepository.
+     */
+    private function makeService(): CategoryService
+    {
+        return new CategoryService(new CategoryRepository());
+    }
+
     public function test_it_returns_paginated_categories_using_custom_paginator(): void
     {
         Category::create(['name' => 'Category A']);
         Category::create(['name' => 'Category B']);
         Category::create(['name' => 'Category C']);
 
-        $service = new CategoryService();
-        $paginated = $service->getPaginatedCategories(perPage: 2);
+        $paginated = $this->makeService()->getPaginatedCategories(perPage: 2);
 
         $this->assertInstanceOf(LengthAwarePaginator::class, $paginated);
         $this->assertEquals(3, $paginated->total());
@@ -35,8 +43,7 @@ class CategoryServiceTest extends TestCase
         Category::create(['name' => 'Clothing']);
         Category::create(['name' => 'Electric Toys']);
 
-        $service = new CategoryService();
-        $paginated = $service->getPaginatedCategories(search: 'Electr', perPage: 10);
+        $paginated = $this->makeService()->getPaginatedCategories(search: 'Electr', perPage: 10);
 
         $this->assertEquals(2, $paginated->total());
         $names = collect($paginated->items())->pluck('name')->toArray();
@@ -47,49 +54,45 @@ class CategoryServiceTest extends TestCase
     public function test_get_descendant_ids_for_root_child_and_deep_hierarchy(): void
     {
         $electronics = Category::create(['name' => 'Electronics']);
-        $phones = Category::create(['name' => 'Phones', 'parent_id' => $electronics->id]);
-        $android = Category::create(['name' => 'Android', 'parent_id' => $phones->id]);
-        $pixel = Category::create(['name' => 'Pixel', 'parent_id' => $android->id]);
+        $phones      = Category::create(['name' => 'Phones',  'parent_id' => $electronics->id]);
+        $android     = Category::create(['name' => 'Android', 'parent_id' => $phones->id]);
+        $pixel       = Category::create(['name' => 'Pixel',   'parent_id' => $android->id]);
 
-        $service = new CategoryService();
+        $service = $this->makeService();
 
-        // 1. Deep hierarchy root
-        $descendantsRoot = $service->getDescendantIds($electronics);
+        // Deep hierarchy root
         $this->assertEqualsCanonicalizing(
             [$electronics->id, $phones->id, $android->id, $pixel->id],
-            $descendantsRoot->all()
+            $service->getDescendantIds($electronics)->all()
         );
 
-        // 2. Mid child
-        $descendantsChild = $service->getDescendantIds($phones);
+        // Mid child
         $this->assertEqualsCanonicalizing(
             [$phones->id, $android->id, $pixel->id],
-            $descendantsChild->all()
+            $service->getDescendantIds($phones)->all()
         );
 
-        // 3. Leaf node
-        $descendantsLeaf = $service->getDescendantIds($pixel);
+        // Leaf node
         $this->assertEqualsCanonicalizing(
             [$pixel->id],
-            $descendantsLeaf->all()
+            $service->getDescendantIds($pixel)->all()
         );
     }
 
     public function test_get_descendant_ids_uses_single_query_for_entire_tree(): void
     {
         $root = Category::create(['name' => 'Level 0']);
-        $l1 = Category::create(['name' => 'Level 1', 'parent_id' => $root->id]);
-        $l2 = Category::create(['name' => 'Level 2', 'parent_id' => $l1->id]);
-        $l3 = Category::create(['name' => 'Level 3', 'parent_id' => $l2->id]);
-        $l4 = Category::create(['name' => 'Level 4', 'parent_id' => $l3->id]);
+        $l1   = Category::create(['name' => 'Level 1', 'parent_id' => $root->id]);
+        $l2   = Category::create(['name' => 'Level 2', 'parent_id' => $l1->id]);
+        $l3   = Category::create(['name' => 'Level 3', 'parent_id' => $l2->id]);
+        $l4   = Category::create(['name' => 'Level 4', 'parent_id' => $l3->id]);
 
-        $service = new CategoryService();
+        $service = $this->makeService();
 
         DB::enableQueryLog();
 
         $descendants = $service->getDescendantIds($root);
 
-        // Should execute exactly 1 query to fetch category structure instead of 5 queries (1 per level)
         $queries = DB::getQueryLog();
         $this->assertCount(1, $queries);
         $this->assertCount(5, $descendants);
@@ -99,23 +102,22 @@ class CategoryServiceTest extends TestCase
 
     public function test_get_tree_builds_recursive_hierarchy_without_n_plus_one_queries(): void
     {
-        $root1 = Category::create(['name' => 'Electronics']);
+        $root1  = Category::create(['name' => 'Electronics']);
         $phones = Category::create(['name' => 'Phones', 'parent_id' => $root1->id]);
         Category::create(['name' => 'Android', 'parent_id' => $phones->id]);
 
         $root2 = Category::create(['name' => 'Clothing']);
         Category::create(['name' => 'Shirts', 'parent_id' => $root2->id]);
 
-        $service = new CategoryService();
+        $service = $this->makeService();
 
         DB::enableQueryLog();
 
-        $tree = $service->getTree();
-
+        $tree    = $service->getTree();
         $queries = DB::getQueryLog();
-        // Single query for fetching categories
+
         $this->assertCount(1, $queries);
-        $this->assertCount(2, $tree); // Electronics, Clothing
+        $this->assertCount(2, $tree);
 
         $electronicsNode = $tree->firstWhere('name', 'Electronics');
         $this->assertCount(1, $electronicsNode->children);
@@ -127,15 +129,12 @@ class CategoryServiceTest extends TestCase
     public function test_descendant_filtering_in_paginated_categories(): void
     {
         $electronics = Category::create(['name' => 'Electronics']);
-        $phones = Category::create(['name' => 'Phones', 'parent_id' => $electronics->id]);
-        $android = Category::create(['name' => 'Android', 'parent_id' => $phones->id]);
-        $clothing = Category::create(['name' => 'Clothing']);
+        $phones      = Category::create(['name' => 'Phones',  'parent_id' => $electronics->id]);
+        $android     = Category::create(['name' => 'Android', 'parent_id' => $phones->id]);
+        $clothing    = Category::create(['name' => 'Clothing']);
 
-        $service = new CategoryService();
-
-        // Filter by Phones
-        $result = $service->getPaginatedCategories(categoryId: $phones->id);
-        $names = collect($result->items())->pluck('name')->all();
+        $result = $this->makeService()->getPaginatedCategories(categoryId: $phones->id);
+        $names  = collect($result->items())->pluck('name')->all();
 
         $this->assertEqualsCanonicalizing(['Phones', 'Android'], $names);
         $this->assertNotContains('Electronics', $names);
@@ -144,19 +143,18 @@ class CategoryServiceTest extends TestCase
 
     public function test_duplicate_name_same_parent_rejected_different_parents_allowed(): void
     {
-        $service = new CategoryService();
-
+        $service     = $this->makeService();
         $electronics = Category::create(['name' => 'Electronics']);
-        $clothing = Category::create(['name' => 'Clothing']);
+        $clothing    = Category::create(['name' => 'Clothing']);
 
         // Phones under Electronics
         $service->create(['name' => 'Phones', 'parent_id' => $electronics->id]);
 
-        // Phones under Clothing should be ALLOWED (different parent)
+        // Phones under Clothing — ALLOWED (different parent)
         $phonesClothing = $service->create(['name' => 'Phones', 'parent_id' => $clothing->id]);
         $this->assertNotNull($phonesClothing->id);
 
-        // Phones under Electronics AGAIN should be REJECTED (same parent)
+        // Phones under Electronics again — REJECTED (same parent)
         $this->expectException(ValidationException::class);
         $service->create(['name' => 'Phones', 'parent_id' => $electronics->id]);
     }
@@ -164,9 +162,9 @@ class CategoryServiceTest extends TestCase
     public function test_circular_parent_prevention(): void
     {
         $electronics = Category::create(['name' => 'Electronics']);
-        $phones = Category::create(['name' => 'Phones', 'parent_id' => $electronics->id]);
+        $phones      = Category::create(['name' => 'Phones', 'parent_id' => $electronics->id]);
 
-        $service = new CategoryService();
+        $service = $this->makeService();
 
         // Self-parent
         try {
@@ -191,7 +189,7 @@ class CategoryServiceTest extends TestCase
         $cat2 = Category::create(['name' => 'Leaf 2']);
         $cat3 = Category::create(['name' => 'Leaf 3']);
 
-        $service = new CategoryService();
+        $service = $this->makeService();
 
         DB::enableQueryLog();
 
@@ -200,7 +198,7 @@ class CategoryServiceTest extends TestCase
         $queries = DB::getQueryLog();
         DB::disableQueryLog();
 
-        // 1: lockForUpdate select, 2: single exists check for parent_id IN (...), 3: delete query
+        // 1: lockForUpdate select, 2: single exists check, 3: delete
         $this->assertLessThanOrEqual(4, count($queries));
         $this->assertDatabaseMissing('categories', ['id' => $cat1->id]);
         $this->assertDatabaseMissing('categories', ['id' => $cat2->id]);
@@ -210,38 +208,29 @@ class CategoryServiceTest extends TestCase
     public function test_bulk_delete_nonexistent_id_fails(): void
     {
         $cat1 = Category::create(['name' => 'Leaf 1']);
-        $service = new CategoryService();
 
         $this->expectException(ValidationException::class);
-        $service->bulkDelete([$cat1->id, 99999]);
+        $this->makeService()->bulkDelete([$cat1->id, 99999]);
     }
 
     public function test_category_service_uses_single_hierarchy_query_per_request_cache(): void
     {
         $electronics = Category::create(['name' => 'Electronics']);
-        $phones = Category::create(['name' => 'Phones', 'parent_id' => $electronics->id]);
+        $phones      = Category::create(['name' => 'Phones',  'parent_id' => $electronics->id]);
         Category::create(['name' => 'Android', 'parent_id' => $phones->id]);
 
-        $service = new CategoryService();
+        $service = $this->makeService();
 
         DB::enableQueryLog();
 
-        // 1. getPaginatedCategories with categoryId filter (populates and uses allCategories cache)
         $service->getPaginatedCategories(categoryId: $electronics->id);
-
-        // 2. getAllCategories (uses cache)
         $service->getAllCategories();
-
-        // 3. getTree (uses cache)
         $service->getTree();
-
-        // 4. getAvailableParents (uses cache)
         $service->getAvailableParents($phones);
 
         $queries = DB::getQueryLog();
         DB::disableQueryLog();
 
-        // Filter queries that fetch all categories without WHERE (i.e., allCategories query)
         $allCategoriesQueries = array_filter($queries, function ($q) {
             $sql = strtolower($q['query']);
             return str_contains($sql, 'select')
@@ -249,7 +238,6 @@ class CategoryServiceTest extends TestCase
                 && !str_contains($sql, 'where');
         });
 
-        // Exactly 1 allCategories query executed across all 4 service calls
         $this->assertCount(1, $allCategoriesQueries);
     }
 
@@ -257,18 +245,16 @@ class CategoryServiceTest extends TestCase
     {
         $electronics = Category::create(['name' => 'Electronics']);
 
-        // Test database unique constraint violation handling when a duplicate row exists
         DB::table('categories')->insert([
-            'name' => 'DuplicateName',
-            'parent_id' => $electronics->id,
+            'name'       => 'DuplicateName',
+            'parent_id'  => $electronics->id,
             'created_at' => now(),
             'updated_at' => now(),
         ]);
 
-        $service = new CategoryService();
+        $service = $this->makeService();
 
         try {
-            // Attempting to create duplicate category under same parent throws ValidationException
             $service->create(['name' => 'DuplicateName', 'parent_id' => $electronics->id]);
             $this->fail('Expected ValidationException due to duplicate name under same parent');
         } catch (ValidationException $e) {
@@ -279,17 +265,15 @@ class CategoryServiceTest extends TestCase
     public function test_get_available_parents_excludes_self_and_descendants(): void
     {
         $electronics = Category::create(['name' => 'Electronics']);
-        $phones = Category::create(['name' => 'Phones', 'parent_id' => $electronics->id]);
-        $android = Category::create(['name' => 'Android', 'parent_id' => $phones->id]);
-        $clothing = Category::create(['name' => 'Clothing']);
+        $phones      = Category::create(['name' => 'Phones',  'parent_id' => $electronics->id]);
+        $android     = Category::create(['name' => 'Android', 'parent_id' => $phones->id]);
+        $clothing    = Category::create(['name' => 'Clothing']);
 
-        $service = new CategoryService();
+        $service = $this->makeService();
 
-        // When category is null, returns all categories
         $allParents = $service->getAvailableParents(null);
         $this->assertCount(4, $allParents);
 
-        // When editing 'Phones', excludes Phones (self) and Android (descendant)
         $availableForPhones = $service->getAvailableParents($phones);
         $ids = $availableForPhones->pluck('id')->all();
 

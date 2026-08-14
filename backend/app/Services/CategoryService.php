@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\Category;
+use App\Repositories\Contracts\CategoryRepositoryInterface;
 use App\Utils\Paginator;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
@@ -14,14 +15,14 @@ use Illuminate\Validation\ValidationException;
 class CategoryService
 {
     /**
-     * Request-level category cache.
+     * Request-level in-memory cache.
+     * Avoids repeating the same SELECT within one HTTP request.
      */
     private ?EloquentCollection $categoriesCache = null;
 
     public function __construct(
-        protected ?Paginator $paginator = null
+        private CategoryRepositoryInterface $repository
     ) {
-        $this->paginator = $paginator ?? new Paginator();
     }
 
     // -------------------------------------------------------------------------
@@ -29,40 +30,39 @@ class CategoryService
     // -------------------------------------------------------------------------
 
     /**
-     * Load all categories once per request and cache them in memory.
+     * Return all categories, loading them once from the database
+     * and caching them in memory for the lifetime of this request.
      */
     private function allCategories(): EloquentCollection
     {
-        return $this->categoriesCache ??= Category::query()
-            ->select(['id', 'name', 'parent_id'])
-            ->orderBy('name')
-            ->get();
+        return $this->categoriesCache ??= $this->repository->getAll();
     }
 
     /**
-     * Clear the internal cache after any mutation.
+     * Clear the in-memory cache after any mutation so subsequent
+     * calls receive fresh data.
      */
-    public function clearCache(): void
+    private function clearCache(): void
     {
         $this->categoriesCache = null;
     }
 
     // -------------------------------------------------------------------------
-    // Queries
+    // Read operations
     // -------------------------------------------------------------------------
 
     /**
-     * Get paginated categories with optional search and category-tree filtering.
+     * Return a paginated list of categories.
+     *
+     * Applies optional name search and descendant filtering on top of
+     * the base query provided by the repository.
      */
     public function getPaginatedCategories(
         ?string $search = null,
         ?int $categoryId = null,
         int $perPage = 10
     ): LengthAwarePaginator {
-        $query = Category::query()
-            ->select(['id', 'name', 'parent_id'])
-            ->with('parent:id,name')
-            ->orderBy('name');
+        $query = $this->repository->paginatedQuery();
 
         if ($categoryId !== null) {
             $root = $this->allCategories()->firstWhere('id', $categoryId);
@@ -82,7 +82,7 @@ class CategoryService
     }
 
     /**
-     * Get all categories (uses cache).
+     * Return all categories for dropdown lists (uses cache).
      */
     public function getAllCategories(): EloquentCollection
     {
@@ -90,10 +90,10 @@ class CategoryService
     }
 
     /**
-     * Get categories that may be selected as a parent.
+     * Return categories that are valid parent choices.
      *
-     * When editing a category, the category itself and all its
-     * descendants are excluded to prevent circular relationships.
+     * When editing a category, it and all its descendants are excluded
+     * to prevent circular relationships.
      */
     public function getAvailableParents(?Category $category = null): EloquentCollection
     {
@@ -109,10 +109,9 @@ class CategoryService
     }
 
     /**
-     * Build the full category tree using a single in-memory pass.
+     * Build and return the full category tree.
      *
-     * Returns root-level categories with their children
-     * recursively attached as a relation.
+     * Uses a single in-memory pass — no N+1 queries.
      */
     public function getTree(): Collection
     {
@@ -122,7 +121,7 @@ class CategoryService
     }
 
     // -------------------------------------------------------------------------
-    // Mutations
+    // Write operations
     // -------------------------------------------------------------------------
 
     /**
@@ -138,7 +137,7 @@ class CategoryService
 
         try {
             $category = DB::transaction(
-                fn () => Category::create(['name' => $name, 'parent_id' => $parentId])
+                fn () => $this->repository->create(['name' => $name, 'parent_id' => $parentId])
             );
 
             $this->clearCache();
@@ -161,11 +160,9 @@ class CategoryService
         $this->ensureUniqueName($name, $parentId, $category);
 
         try {
-            $updated = DB::transaction(function () use ($category, $name, $parentId) {
-                $category->update(['name' => $name, 'parent_id' => $parentId]);
-
-                return $category->fresh(['parent:id,name', 'children']);
-            });
+            $updated = DB::transaction(
+                fn () => $this->repository->update($category, ['name' => $name, 'parent_id' => $parentId])
+            );
 
             $this->clearCache();
 
@@ -178,17 +175,17 @@ class CategoryService
     /**
      * Delete a single leaf category.
      *
-     * Throws a ValidationException when the category has children.
+     * Business rule: categories with children cannot be deleted.
      */
     public function delete(Category $category): void
     {
-        if ($category->children()->exists()) {
+        if ($this->repository->hasChildren($category)) {
             throw ValidationException::withMessages([
                 'category' => ["Cannot delete '{$category->name}' because it has child categories."],
             ]);
         }
 
-        DB::transaction(fn () => $category->delete());
+        DB::transaction(fn () => $this->repository->delete($category));
 
         $this->clearCache();
     }
@@ -196,8 +193,9 @@ class CategoryService
     /**
      * Atomically delete multiple leaf categories.
      *
-     * Rolls back the entire transaction if any selected category
-     * has children, or if any requested ID no longer exists.
+     * Business rules:
+     * - All IDs must exist.
+     * - None of them may have children.
      */
     public function bulkDelete(array $ids): void
     {
@@ -210,24 +208,21 @@ class CategoryService
         }
 
         DB::transaction(function () use ($ids) {
-            $categories = Category::query()
-                ->whereIn('id', $ids)
-                ->lockForUpdate()
-                ->get();
+            $rows = $this->repository->lockForDelete($ids->all());
 
-            if ($categories->count() !== $ids->count()) {
+            if ($rows->count() !== $ids->count()) {
                 throw ValidationException::withMessages([
                     'ids' => ['One or more selected categories do not exist.'],
                 ]);
             }
 
-            if (Category::whereIn('parent_id', $ids)->exists()) {
+            if ($this->repository->hasAnyChildren($ids->all())) {
                 throw ValidationException::withMessages([
                     'ids' => ['Cannot delete categories that have child categories.'],
                 ]);
             }
 
-            Category::whereIn('id', $ids)->delete();
+            $this->repository->deleteMany($ids->all());
         });
 
         $this->clearCache();
@@ -238,8 +233,10 @@ class CategoryService
     // -------------------------------------------------------------------------
 
     /**
-     * Return a category's ID and all descendant IDs using a
-     * single in-memory BFS over the cached category list.
+     * Return the given category's ID plus all descendant IDs.
+     *
+     * Uses a BFS (breadth-first search) over the in-memory cache.
+     * No recursive database queries — one query for all levels.
      *
      * Electronics
      * ├── Phones
@@ -273,7 +270,7 @@ class CategoryService
     // -------------------------------------------------------------------------
 
     /**
-     * Recursively build a tree from a parent_id → children map.
+     * Recursively build the tree from a grouped parent_id map.
      */
     private function buildTree(Collection $grouped, ?int $parentId): Collection
     {
@@ -288,8 +285,7 @@ class CategoryService
     }
 
     /**
-     * Parse parent_id from raw request data.
-     *
+     * Normalise the parent_id field from raw request data.
      * Returns null for root categories (empty string or missing key).
      */
     private function resolveParentId(array $data): ?int
@@ -300,10 +296,12 @@ class CategoryService
     }
 
     /**
-     * Validate that a parent_id is legal:
-     *  – the parent must exist
-     *  – a category cannot be its own parent
-     *  – a category cannot move into one of its own descendants
+     * Business rule: a parent_id must be valid and must not create a cycle.
+     *
+     * Checks (in order):
+     *  1. Parent must exist.
+     *  2. A category cannot be its own parent.
+     *  3. A category cannot be moved into one of its own descendants.
      */
     private function validateParent(?int $parentId, ?Category $category = null): void
     {
@@ -337,10 +335,11 @@ class CategoryService
     }
 
     /**
-     * Ensure no sibling already uses the same name under the same parent.
+     * Business rule: category names must be unique under the same parent.
      *
-     * Uses the in-memory cache for zero extra queries. The database unique
-     * constraint is the authoritative last line of defence.
+     * Uses the in-memory cache — zero extra database queries.
+     * The database unique constraint (parent_id_safe, name) is the
+     * last line of defence against race conditions.
      */
     private function ensureUniqueName(
         string $name,
@@ -360,34 +359,27 @@ class CategoryService
     }
 
     /**
-     * Re-throw a QueryException as a user-friendly ValidationException
-     * when it originates from a unique-constraint violation.
+     * Convert a QueryException for a unique-constraint violation into
+     * a user-friendly ValidationException.
      *
      * @throws ValidationException
      * @throws QueryException
      */
     private function handleDuplicateKey(QueryException $e): never
     {
-        if ($this->isDuplicateKeyException($e)) {
+        $sqlState = (string) ($e->errorInfo[0] ?? $e->getCode());
+
+        $isDuplicate = $sqlState === '23000'
+            || $sqlState === '23505'
+            || str_contains($e->getMessage(), 'UNIQUE constraint failed')
+            || str_contains($e->getMessage(), 'Duplicate entry');
+
+        if ($isDuplicate) {
             throw ValidationException::withMessages([
                 'name' => ['A category with this name already exists under the selected parent.'],
             ]);
         }
 
         throw $e;
-    }
-
-    /**
-     * Detect SQLSTATE 23000 / 23505 (unique constraint violations)
-     * across MySQL, PostgreSQL, and SQLite drivers.
-     */
-    private function isDuplicateKeyException(QueryException $e): bool
-    {
-        $sqlState = (string) ($e->errorInfo[0] ?? $e->getCode());
-
-        return $sqlState === '23000'
-            || $sqlState === '23505'
-            || str_contains($e->getMessage(), 'UNIQUE constraint failed')
-            || str_contains($e->getMessage(), 'Duplicate entry');
     }
 }
