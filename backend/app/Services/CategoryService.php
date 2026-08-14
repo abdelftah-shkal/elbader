@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\Category;
+use App\Utils\Paginator;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Support\Collection;
@@ -11,6 +12,12 @@ use Illuminate\Validation\ValidationException;
 
 class CategoryService
 {
+    public function __construct(
+        protected ?Paginator $paginator = null
+    ) {
+        $this->paginator = $paginator ?? new Paginator();
+    }
+
     /**
      * Get paginated categories with optional search
      * and category/descendant filtering.
@@ -46,9 +53,7 @@ class CategoryService
             );
         }
 
-        return $query
-            ->paginate($perPage)
-            ->withQueryString();
+        return Paginator::paginate($query, $perPage);
     }
 
     /**

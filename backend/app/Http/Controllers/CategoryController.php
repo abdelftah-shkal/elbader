@@ -20,33 +20,13 @@ class CategoryController extends Controller
     }
     public function index(Request $request)
     {
-        $query = Category::with('parent');
+        $categories = $this->categoryService->getPaginatedCategories(
+            search: $request->input('search'),
+            categoryId: $request->filled('category_id') ? (int) $request->input('category_id') : null,
+            perPage: 10
+        );
 
-        if ($request->filled('category_id')) {
-            $category = Category::findOrFail(
-                $request->category_id
-            );
-
-            $descendantIds = $this->categoryService
-                ->getDescendantIds($category);
-
-            $query->whereIn('id', $descendantIds);
-        }
-
-        if ($request->filled('search')) {
-            $query->where(
-                'name',
-                'like',
-                '%' . $request->search . '%'
-            );
-        }
-
-        $categories = $query
-            ->orderBy('name')
-            ->paginate(10)
-            ->withQueryString();
-
-        $allCategories = Category::orderBy('name')->get();
+        $allCategories = $this->categoryService->getAllCategories();
 
         return view('categories.index', [
             'categories' => $categories,
