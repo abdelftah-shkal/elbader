@@ -6,16 +6,41 @@ use App\Models\Category;
 use App\Utils\Paginator;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
 class CategoryService
 {
+    /**
+     * Request-level category cache.
+     */
+    private ?EloquentCollection $categoriesCache = null;
+
     public function __construct(
         protected ?Paginator $paginator = null
     ) {
         $this->paginator = $paginator ?? new Paginator();
+    }
+
+    /**
+     * Get or load all categories for the current service instance.
+     */
+    private function allCategories(): EloquentCollection
+    {
+        return $this->categoriesCache ??= Category::query()
+            ->select(['id', 'name', 'parent_id'])
+            ->orderBy('name')
+            ->get();
+    }
+
+    /**
+     * Clear the internal category cache after mutations.
+     */
+    public function clearCache(): void
+    {
+        $this->categoriesCache = null;
     }
 
     /**
@@ -28,18 +53,22 @@ class CategoryService
         int $perPage = 10
     ): LengthAwarePaginator {
         $query = Category::query()
-            ->with('parent')
+            ->select(['id', 'name', 'parent_id'])
+            ->with('parent:id,name')
             ->orderBy('name');
 
         /*
          * Filter by selected category and all its descendants.
          */
         if ($categoryId !== null) {
-            $category = Category::findOrFail($categoryId);
+            $category = Category::find($categoryId);
 
-            $descendantIds = $this->getDescendantIds($category);
-
-            $query->whereIn('id', $descendantIds);
+            if ($category) {
+                $descendantIds = $this->getDescendantIds($category);
+                $query->whereIn('id', $descendantIds);
+            } else {
+                $query->whereRaw('1 = 0');
+            }
         }
 
         /*
@@ -61,13 +90,11 @@ class CategoryService
      */
     public function getAllCategories(): EloquentCollection
     {
-        return Category::query()
-            ->orderBy('name')
-            ->get();
+        return $this->allCategories();
     }
 
     /**
-     * Get a category and all descendant IDs.
+     * Get a category and all descendant IDs using a single in-memory lookup.
      *
      * Example:
      *
@@ -82,27 +109,23 @@ class CategoryService
      */
     public function getDescendantIds(Category $category): Collection
     {
+        $categories = $this->allCategories();
+        $childrenMap = $categories->groupBy('parent_id');
+
         $ids = collect([$category->id]);
+        $queue = [$category->id];
 
-        $currentParentIds = collect([$category->id]);
+        while (!empty($queue)) {
+            $currentId = array_shift($queue);
+            $children = $childrenMap->get($currentId, collect());
 
-        while ($currentParentIds->isNotEmpty()) {
-            $childIds = Category::query()
-                ->whereIn('parent_id', $currentParentIds)
-                ->pluck('id');
-
-            if ($childIds->isEmpty()) {
-                break;
+            foreach ($children as $child) {
+                $ids->push($child->id);
+                $queue[] = $child->id;
             }
-
-            $ids = $ids->merge($childIds);
-
-            $currentParentIds = $childIds;
         }
 
-        return $ids
-            ->unique()
-            ->values();
+        return $ids->unique()->values();
     }
 
     /**
@@ -114,54 +137,47 @@ class CategoryService
     public function getAvailableParents(
         ?Category $category = null
     ): EloquentCollection {
-        $query = Category::query()
-            ->orderBy('name');
+        $categories = $this->allCategories();
 
         if ($category !== null) {
             $excludedIds = $this->getDescendantIds($category);
-
-            $query->whereNotIn('id', $excludedIds);
+            return $categories->whereNotIn('id', $excludedIds)->values();
         }
 
-        return $query->get();
+        return $categories;
     }
 
     /**
-     * Build the category tree.
+     * Build the category tree using in-memory parent_id grouping.
      *
      * Returns only root categories, with their children
      * recursively attached.
      */
     public function getTree(): Collection
     {
-        $categories = Category::query()
-            ->orderBy('name')
-            ->get();
+        $categories = $this->allCategories();
+        $grouped = $categories->groupBy('parent_id');
 
-        return $this->buildTree($categories);
+        return $this->buildTreeFromGrouped($grouped, null);
     }
 
     /**
-     * Recursively build the tree.
+     * Recursively build the tree from parent_id grouped map.
      */
-    private function buildTree(
-        Collection $categories,
+    private function buildTreeFromGrouped(
+        Collection $grouped,
         ?int $parentId = null
     ): Collection {
-        return $categories
-            ->where('parent_id', $parentId)
-            ->map(function (Category $category) use ($categories) {
-                $category->setRelation(
-                    'children',
-                    $this->buildTree(
-                        $categories,
-                        $category->id
-                    )
-                );
+        $children = $grouped->get($parentId, collect());
 
-                return $category;
-            })
-            ->values();
+        return $children->map(function (Category $category) use ($grouped) {
+            $category->setRelation(
+                'children',
+                $this->buildTreeFromGrouped($grouped, $category->id)
+            );
+
+            return $category;
+        })->values();
     }
 
     /**
@@ -170,7 +186,9 @@ class CategoryService
     public function create(array $data): Category
     {
         $name = trim($data['name']);
-        $parentId = $data['parent_id'] ?? null;
+        $parentId = isset($data['parent_id']) && $data['parent_id'] !== ''
+            ? (int) $data['parent_id']
+            : null;
 
         $this->validateParent($parentId);
 
@@ -179,12 +197,27 @@ class CategoryService
             $parentId
         );
 
-        return DB::transaction(function () use ($name, $parentId) {
-            return Category::create([
-                'name' => $name,
-                'parent_id' => $parentId,
-            ]);
-        });
+        try {
+            $category = DB::transaction(function () use ($name, $parentId) {
+                return Category::create([
+                    'name' => $name,
+                    'parent_id' => $parentId,
+                ]);
+            });
+
+            $this->clearCache();
+
+            return $category;
+        } catch (QueryException $e) {
+            if ($this->isDuplicateKeyException($e)) {
+                throw ValidationException::withMessages([
+                    'name' => [
+                        'A category with this name already exists under the selected parent.'
+                    ],
+                ]);
+            }
+            throw $e;
+        }
     }
 
     /**
@@ -195,7 +228,9 @@ class CategoryService
         array $data
     ): Category {
         $name = trim($data['name']);
-        $parentId = $data['parent_id'] ?? null;
+        $parentId = isset($data['parent_id']) && $data['parent_id'] !== ''
+            ? (int) $data['parent_id']
+            : null;
 
         /*
          * Make sure the new parent is valid and does not
@@ -216,21 +251,36 @@ class CategoryService
             $category
         );
 
-        return DB::transaction(function () use (
-            $category,
-            $name,
-            $parentId
-        ) {
-            $category->update([
-                'name' => $name,
-                'parent_id' => $parentId,
-            ]);
+        try {
+            $updatedCategory = DB::transaction(function () use (
+                $category,
+                $name,
+                $parentId
+            ) {
+                $category->update([
+                    'name' => $name,
+                    'parent_id' => $parentId,
+                ]);
 
-            return $category->fresh([
-                'parent',
-                'children',
-            ]);
-        });
+                return $category->fresh([
+                    'parent:id,name',
+                    'children',
+                ]);
+            });
+
+            $this->clearCache();
+
+            return $updatedCategory;
+        } catch (QueryException $e) {
+            if ($this->isDuplicateKeyException($e)) {
+                throw ValidationException::withMessages([
+                    'name' => [
+                        'A category with this name already exists under the selected parent.'
+                    ],
+                ]);
+            }
+            throw $e;
+        }
     }
 
     /**
@@ -251,13 +301,15 @@ class CategoryService
         DB::transaction(function () use ($category) {
             $category->delete();
         });
+
+        $this->clearCache();
     }
 
     /**
      * Delete multiple categories.
      *
      * The whole operation fails if even one selected category
-     * has children.
+     * has children. Single query check for child existence.
      */
     public function bulkDelete(array $ids): void
     {
@@ -292,16 +344,18 @@ class CategoryService
             }
 
             /*
-             * Check every selected category.
+             * Single query check for any children among selected IDs.
              */
-            foreach ($categories as $category) {
-                if ($category->children()->exists()) {
-                    throw ValidationException::withMessages([
-                        'ids' => [
-                            "Cannot delete '{$category->name}' because it has child categories."
-                        ],
-                    ]);
-                }
+            $hasChildren = Category::query()
+                ->whereIn('parent_id', $ids)
+                ->exists();
+
+            if ($hasChildren) {
+                throw ValidationException::withMessages([
+                    'ids' => [
+                        'Cannot delete categories that have child categories.'
+                    ],
+                ]);
             }
 
             /*
@@ -311,6 +365,8 @@ class CategoryService
                 ->whereIn('id', $ids)
                 ->delete();
         });
+
+        $this->clearCache();
     }
 
     /**
@@ -320,16 +376,10 @@ class CategoryService
         ?int $parentId,
         ?Category $category = null
     ): void {
-        /*
-         * NULL means root category.
-         */
         if ($parentId === null) {
             return;
         }
 
-        /*
-         * Parent must exist.
-         */
         $parent = Category::find($parentId);
 
         if (!$parent) {
@@ -340,9 +390,6 @@ class CategoryService
             ]);
         }
 
-        /*
-         * During update, category cannot be its own parent.
-         */
         if ($category !== null && $parent->id === $category->id) {
             throw ValidationException::withMessages([
                 'parent_id' => [
@@ -351,10 +398,6 @@ class CategoryService
             ]);
         }
 
-        /*
-         * During update, parent cannot be one of the
-         * category's descendants.
-         */
         if ($category !== null) {
             $descendantIds = $this->getDescendantIds($category);
 
@@ -371,16 +414,6 @@ class CategoryService
     /**
      * Make sure the category name is unique under
      * the same parent.
-     *
-     * Example:
-     *
-     * Electronics
-     * ├── Phones
-     *
-     * Clothing
-     * └── Phones
-     *
-     * This is allowed because the parents are different.
      */
     private function ensureUniqueName(
         string $name,
@@ -397,9 +430,6 @@ class CategoryService
                 }
             });
 
-        /*
-         * When updating, exclude the current category.
-         */
         if ($category !== null) {
             $query->where('id', '!=', $category->id);
         }
@@ -411,5 +441,16 @@ class CategoryService
                 ],
             ]);
         }
+    }
+
+    /**
+     * Check if a QueryException is a duplicate key/unique constraint violation.
+     */
+    private function isDuplicateKeyException(QueryException $e): bool
+    {
+        $sqlState = $e->errorInfo[0] ?? $e->getCode();
+        return $sqlState === '23000'
+            || str_contains($e->getMessage(), 'UNIQUE constraint failed')
+            || str_contains($e->getMessage(), 'Duplicate entry');
     }
 }

@@ -69,6 +69,19 @@ class CategoryControllerTest extends TestCase
         $response->assertJsonValidationErrors(['name']);
     }
 
+    public function test_cannot_create_duplicate_root_category_name(): void
+    {
+        Category::create(['name' => 'Electronics', 'parent_id' => null]);
+
+        $response = $this->postJson('/categories', [
+            'name' => 'Electronics',
+            'parent_id' => null,
+        ]);
+
+        $response->assertStatus(422);
+        $response->assertJsonValidationErrors(['name']);
+    }
+
     public function test_parent_options_excludes_self_and_descendants(): void
     {
         $electronics = Category::create(['name' => 'Electronics']);
@@ -155,5 +168,19 @@ class CategoryControllerTest extends TestCase
         // Neither category should be deleted
         $this->assertDatabaseHas('categories', ['id' => $parent->id]);
         $this->assertDatabaseHas('categories', ['id' => $leaf->id]);
+    }
+
+    public function test_pagination_links_preserve_query_string_parameters(): void
+    {
+        for ($i = 1; $i <= 15; $i++) {
+            Category::create(['name' => "Gadget $i"]);
+        }
+
+        $response = $this->get('/categories?search=Gadget&page=1', [
+            'HTTP_X-Requested-With' => 'XMLHttpRequest',
+        ]);
+
+        $response->assertStatus(200);
+        $response->assertSee('search=Gadget');
     }
 }

@@ -14,11 +14,24 @@ use InvalidArgumentException;
 class Paginator
 {
     /**
+     * Maximum allowed perPage value.
+     */
+    public const MAX_PER_PAGE = 100;
+
+    /**
      * Create a new class instance.
      */
     public function __construct()
     {
         //
+    }
+
+    /**
+     * Clamp perPage to prevent unbounded page sizes [1, 100].
+     */
+    protected static function clampPerPage(int $perPage): int
+    {
+        return min(max(1, $perPage), static::MAX_PER_PAGE);
     }
 
     /**
@@ -38,20 +51,23 @@ class Paginator
         string $pageName = 'page',
         array $options = []
     ): LengthAwarePaginatorContract {
-        $perPage = max(1, $perPage);
+        $perPage = static::clampPerPage($perPage);
         $page = max(1, $page ?? BasePaginator::resolveCurrentPage($pageName));
 
-        if ($target instanceof EloquentBuilder || $target instanceof QueryBuilder || $target instanceof Relation) {
-            return static::paginateQuery($target, $perPage, $page, $pageName, $options);
-        }
+        return match (true) {
+            $target instanceof EloquentBuilder,
+            $target instanceof QueryBuilder,
+            $target instanceof Relation =>
+                static::paginateQuery($target, $perPage, $page, $pageName, $options),
 
-        if ($target instanceof Collection || is_array($target)) {
-            return static::paginateCollection($target, $perPage, $page, $pageName, $options);
-        }
+            $target instanceof Collection,
+            is_array($target) =>
+                static::paginateCollection($target, $perPage, $page, $pageName, $options),
 
-        throw new InvalidArgumentException(
-            'Target must be an instance of Eloquent Builder, Query Builder, Relation, Collection, or array.'
-        );
+            default => throw new InvalidArgumentException(
+                'Target must be an instance of Eloquent Builder, Query Builder, Relation, Collection, or array.'
+            ),
+        };
     }
 
     /**
@@ -77,7 +93,7 @@ class Paginator
         string $pageName = 'page',
         array $options = []
     ): LengthAwarePaginatorContract {
-        $perPage = max(1, $perPage);
+        $perPage = static::clampPerPage($perPage);
         $page = max(1, $page ?? BasePaginator::resolveCurrentPage($pageName));
 
         $total = $query->count();
@@ -112,7 +128,7 @@ class Paginator
         string $pageName = 'page',
         array $options = []
     ): LengthAwarePaginatorContract {
-        $perPage = max(1, $perPage);
+        $perPage = static::clampPerPage($perPage);
         $page = max(1, $page ?? BasePaginator::resolveCurrentPage($pageName));
 
         $collection = $items instanceof Collection ? $items : collect($items);

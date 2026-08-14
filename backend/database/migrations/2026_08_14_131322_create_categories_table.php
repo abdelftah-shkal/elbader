@@ -15,9 +15,13 @@ return new class extends Migration
             $table->id();
             $table->string('name');
             $table->foreignId('parent_id')
-            ->nullable()
-            ->constrained('categories')
-            ->nullOnDelete();
+                ->nullable()
+                ->constrained('categories')
+                ->nullOnDelete();
+            $table->unsignedBigInteger('parent_id_safe')
+                ->virtualAs('COALESCE(parent_id, 0)');
+            $table->unique(['parent_id_safe', 'name']);
+            $table->index('name');
             $table->timestamps();
         });
     }

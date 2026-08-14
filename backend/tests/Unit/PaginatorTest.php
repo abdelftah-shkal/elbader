@@ -51,4 +51,18 @@ class PaginatorTest extends TestCase
         $this->assertEquals(3, $paginated->total());
         $this->assertEquals([1, 2], $paginated->items());
     }
+
+    public function test_it_clamps_per_page_to_maximum_100(): void
+    {
+        $data = collect(range(1, 200));
+
+        // Attempting perPage = 99999 should be clamped to 100
+        $paginated = Paginator::paginate($data, 99999, 1);
+        $this->assertEquals(100, $paginated->perPage());
+        $this->assertCount(100, $paginated->items());
+
+        // Attempting negative or zero perPage should be clamped to 1
+        $paginatedZero = Paginator::paginate($data, 0, 1);
+        $this->assertEquals(1, $paginatedZero->perPage());
+    }
 }
