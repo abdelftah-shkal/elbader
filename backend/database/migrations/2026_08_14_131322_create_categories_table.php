@@ -18,11 +18,7 @@ return new class extends Migration
                 ->nullable()
                 ->constrained('categories')
                 ->nullOnDelete();
-            $table->unsignedBigInteger('parent_id_safe')
-                ->virtualAs('COALESCE(parent_id, 0)');
-            $table->unique(['parent_id_safe', 'name']);
             $table->index('parent_id');
-            $table->index('name');
             $table->timestamps();
         });
     }

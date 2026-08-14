@@ -7,7 +7,6 @@ use App\Repositories\Contracts\CategoryRepositoryInterface;
 use App\Utils\Paginator;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
-use Illuminate\Database\QueryException;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
@@ -136,17 +135,13 @@ class CategoryService
         $this->validateParent($parentId);
         $this->ensureUniqueName($name, $parentId);
 
-        try {
-            $category = DB::transaction(
-                fn () => $this->repository->create(['name' => $name, 'parent_id' => $parentId])
-            );
+        $category = DB::transaction(
+            fn () => $this->repository->create(['name' => $name, 'parent_id' => $parentId])
+        );
 
-            $this->clearCache();
+        $this->clearCache();
 
-            return $category;
-        } catch (QueryException $e) {
-            $this->handleDuplicateKey($e);
-        }
+        return $category;
     }
 
     /**
@@ -160,17 +155,13 @@ class CategoryService
         $this->validateParent($parentId, $category);
         $this->ensureUniqueName($name, $parentId, $category);
 
-        try {
-            $updated = DB::transaction(
-                fn () => $this->repository->update($category, ['name' => $name, 'parent_id' => $parentId])
-            );
+        $updated = DB::transaction(
+            fn () => $this->repository->update($category, ['name' => $name, 'parent_id' => $parentId])
+        );
 
-            $this->clearCache();
+        $this->clearCache();
 
-            return $updated;
-        } catch (QueryException $e) {
-            $this->handleDuplicateKey($e);
-        }
+        return $updated;
     }
 
     /**
@@ -339,8 +330,6 @@ class CategoryService
      * Business rule: category names must be unique under the same parent.
      *
      * Uses the in-memory cache — zero extra database queries.
-     * The database unique constraint (parent_id_safe, name) is the
-     * last line of defence against race conditions.
      */
     private function ensureUniqueName(
         string $name,
@@ -357,30 +346,5 @@ class CategoryService
                 'name' => ['A category with this name already exists under the selected parent.'],
             ]);
         }
-    }
-
-    /**
-     * Convert a QueryException for a unique-constraint violation into
-     * a user-friendly ValidationException.
-     *
-     * @throws ValidationException
-     * @throws QueryException
-     */
-    private function handleDuplicateKey(QueryException $e): never
-    {
-        $sqlState = (string) ($e->errorInfo[0] ?? $e->getCode());
-
-        $isDuplicate = $sqlState === '23000'
-            || $sqlState === '23505'
-            || str_contains($e->getMessage(), 'UNIQUE constraint failed')
-            || str_contains($e->getMessage(), 'Duplicate entry');
-
-        if ($isDuplicate) {
-            throw ValidationException::withMessages([
-                'name' => ['A category with this name already exists under the selected parent.'],
-            ]);
-        }
-
-        throw $e;
     }
 }
