@@ -2,18 +2,21 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Requests\BulkDeleteCategoryRequest;
 use App\Http\Requests\StoreCategoryRequest;
 use App\Http\Requests\UpdateCategoryRequest;
-use App\Http\Requests\BulkDeleteCategoryRequest;
 use App\Models\Category;
 use App\Services\CategoryService;
+use App\Traits\ApiResponse;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\View\View;
 use Illuminate\Validation\ValidationException;
+use Illuminate\View\View;
 
 class CategoryController extends Controller
 {
+    use ApiResponse;
+
     public function __construct(
         protected CategoryService $categoryService
     ) {
@@ -40,11 +43,8 @@ class CategoryController extends Controller
             ])->render();
         }
 
-        $allCategories = $this->categoryService
-            ->getAllCategories();
-
-        $tree = $this->categoryService
-            ->getTree();
+        $allCategories = $this->categoryService->getAllCategories();
+        $tree = $this->categoryService->getTree();
 
         return view('categories.index', [
             'categories' => $categories,
@@ -56,26 +56,21 @@ class CategoryController extends Controller
     /**
      * Create category.
      */
-    public function store(
-        StoreCategoryRequest $request
-    ): JsonResponse {
+    public function store(StoreCategoryRequest $request): JsonResponse
+    {
         try {
-            $category = $this->categoryService->create(
-                $request->validated()
+            $category = $this->categoryService->create($request->validated());
+
+            return $this->successResponse(
+                data: $category->load('parent'),
+                message: 'Category created successfully.',
+                statusCode: 201
             );
-
-            return response()->json([
-                'success' => true,
-                'message' => 'Category created successfully.',
-                'data' => $category->load('parent'),
-            ], 201);
-
         } catch (ValidationException $exception) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Unable to create category.',
-                'errors' => $exception->errors(),
-            ], 422);
+            return $this->validationErrorResponse(
+                exception: $exception,
+                defaultMessage: 'Unable to create category.'
+            );
         }
     }
 
@@ -84,10 +79,9 @@ class CategoryController extends Controller
      */
     public function show(Category $category): JsonResponse
     {
-        return response()->json([
-            'success' => true,
-            'data' => $category->load('parent'),
-        ]);
+        return $this->successResponse(
+            data: $category->load('parent')
+        );
     }
 
     /**
@@ -103,84 +97,66 @@ class CategoryController extends Controller
                 $request->validated()
             );
 
-            return response()->json([
-                'success' => true,
-                'message' => 'Category updated successfully.',
-                'data' => $category,
-            ]);
-
+            return $this->successResponse(
+                data: $category,
+                message: 'Category updated successfully.'
+            );
         } catch (ValidationException $exception) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Unable to update category.',
-                'errors' => $exception->errors(),
-            ], 422);
+            return $this->validationErrorResponse(
+                exception: $exception,
+                defaultMessage: 'Unable to update category.'
+            );
         }
     }
 
     /**
      * Delete one category.
      */
-    public function destroy(
-        Category $category
-    ): JsonResponse {
+    public function destroy(Category $category): JsonResponse
+    {
         try {
             $this->categoryService->delete($category);
 
-            return response()->json([
-                'success' => true,
-                'message' => 'Category deleted successfully.',
-            ]);
-
+            return $this->successResponse(
+                message: 'Category deleted successfully.'
+            );
         } catch (ValidationException $exception) {
-            return response()->json([
-                'success' => false,
-                'message' => $exception->errors()['category'][0]
-                    ?? 'Unable to delete category.',
-                'errors' => $exception->errors(),
-            ], 422);
+            return $this->validationErrorResponse(
+                exception: $exception,
+                defaultMessage: 'Unable to delete category.',
+                errorKey: 'category'
+            );
         }
     }
 
     /**
      * Delete multiple categories.
      */
-    public function bulkDestroy(
-        BulkDeleteCategoryRequest $request
-    ): JsonResponse {
+    public function bulkDestroy(BulkDeleteCategoryRequest $request): JsonResponse
+    {
         try {
-            $this->categoryService->bulkDelete(
-                $request->validated('ids')
+            $this->categoryService->bulkDelete($request->validated('ids'));
+
+            return $this->successResponse(
+                message: 'Categories deleted successfully.'
             );
-
-            return response()->json([
-                'success' => true,
-                'message' => 'Categories deleted successfully.',
-            ]);
-
         } catch (ValidationException $exception) {
-            return response()->json([
-                'success' => false,
-                'message' => $exception->errors()['ids'][0]
-                    ?? 'Unable to delete categories.',
-                'errors' => $exception->errors(),
-            ], 422);
+            return $this->validationErrorResponse(
+                exception: $exception,
+                defaultMessage: 'Unable to delete categories.',
+                errorKey: 'ids'
+            );
         }
     }
 
     /**
      * Get available parent categories.
      */
-    public function parents(
-        ?Category $category = null
-    ): JsonResponse {
-        $parents = $this->categoryService
-            ->getAvailableParents($category);
+    public function parents(?Category $category = null): JsonResponse
+    {
+        $parents = $this->categoryService->getAvailableParents($category);
 
-        return response()->json([
-            'success' => true,
-            'data' => $parents,
-        ]);
+        return $this->successResponse(data: $parents);
     }
 
     /**
@@ -190,9 +166,6 @@ class CategoryController extends Controller
     {
         $tree = $this->categoryService->getTree();
 
-        return response()->json([
-            'success' => true,
-            'data' => $tree,
-        ]);
+        return $this->successResponse(data: $tree);
     }
 }
