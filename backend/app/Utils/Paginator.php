@@ -82,8 +82,10 @@ class Paginator
 
         $total = $query->count();
 
+        $offset = ($page - 1) * $perPage;
+
         $items = $total > 0
-            ? $query->forPage($page, $perPage)->get()
+            ? $query->offset($offset)->limit($perPage)->get()
             : collect();
 
         $paginator = new LengthAwarePaginator(

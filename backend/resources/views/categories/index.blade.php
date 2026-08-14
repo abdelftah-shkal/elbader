@@ -264,6 +264,6 @@
 </div>
 
 
-@vite('resources/js/categories.js')
+<script src="/js/categories.js" type="module"></script>
 
 @endsection

@@ -22,15 +22,21 @@ class CategoryController extends Controller
     /**
      * Display categories page.
      */
-    public function index(Request $request): View
+    public function index(Request $request): View|\Illuminate\Http\Response|string
     {
         $categories = $this->categoryService->getPaginatedCategories(
             search: $request->input('search'),
             categoryId: $request->filled('category_id')
-            ? (int) $request->input('category_id')
-            : null,
+                ? (int) $request->input('category_id')
+                : null,
             perPage: 10
         );
+
+        if ($request->ajax() || $request->header('X-Requested-With') === 'XMLHttpRequest') {
+            return view('categories._table', [
+                'categories' => $categories,
+            ])->render();
+        }
 
         $allCategories = $this->categoryService
             ->getAllCategories();
