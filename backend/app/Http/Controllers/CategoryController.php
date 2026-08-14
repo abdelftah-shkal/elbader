@@ -34,7 +34,8 @@ class CategoryController extends Controller
                 : null,
             perPage: $request->filled('per_page')
                 ? (int) $request->input('per_page')
-                : 10
+                : 10,
+            page: max(1, (int) $request->input('page', 1))
         );
 
         if ($request->ajax() || $request->header('X-Requested-With') === 'XMLHttpRequest') {

@@ -31,10 +31,10 @@ class CategoryServiceTest extends TestCase
 
         $paginated = $this->makeService()->getPaginatedCategories(perPage: 2);
 
-        $this->assertInstanceOf(LengthAwarePaginator::class, $paginated);
-        $this->assertEquals(3, $paginated->total());
-        $this->assertEquals(2, $paginated->perPage());
-        $this->assertCount(2, $paginated->items());
+        $this->assertIsArray($paginated);
+        $this->assertEquals(3, $paginated['pagination']['total']);
+        $this->assertEquals(2, $paginated['pagination']['per_page']);
+        $this->assertCount(2, $paginated['data']);
     }
 
     public function test_it_filters_and_paginates_categories_by_search(): void
@@ -45,8 +45,8 @@ class CategoryServiceTest extends TestCase
 
         $paginated = $this->makeService()->getPaginatedCategories(search: 'Electr', perPage: 10);
 
-        $this->assertEquals(2, $paginated->total());
-        $names = collect($paginated->items())->pluck('name')->toArray();
+        $this->assertEquals(2, $paginated['pagination']['total']);
+        $names = collect($paginated['data'])->pluck('name')->toArray();
         $this->assertContains('Electric Toys', $names);
         $this->assertContains('Electronics', $names);
     }
@@ -134,7 +134,7 @@ class CategoryServiceTest extends TestCase
         $clothing    = Category::create(['name' => 'Clothing']);
 
         $result = $this->makeService()->getPaginatedCategories(categoryId: $phones->id);
-        $names  = collect($result->items())->pluck('name')->all();
+        $names  = collect($result['data'])->pluck('name')->all();
 
         $this->assertEqualsCanonicalizing(['Phones', 'Android'], $names);
         $this->assertNotContains('Electronics', $names);

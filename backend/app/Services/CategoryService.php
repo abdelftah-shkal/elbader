@@ -60,8 +60,9 @@ class CategoryService
     public function getPaginatedCategories(
         ?string $search = null,
         ?int $categoryId = null,
-        int $perPage = 10
-    ): LengthAwarePaginator {
+        int $perPage = 10,
+        int $page = 1
+    ): array {
         $query = $this->repository->paginatedQuery();
 
         if ($categoryId !== null) {
@@ -78,7 +79,7 @@ class CategoryService
             $query->where('name', 'like', '%' . trim($search) . '%');
         }
 
-        return Paginator::paginate($query, $perPage);
+        return Paginator::paginate($query, $perPage, $page);
     }
 
     /**

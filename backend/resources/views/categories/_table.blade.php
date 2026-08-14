@@ -16,7 +16,7 @@
             </tr>
         </thead>
         <tbody class="divide-y divide-slate-100 text-sm">
-            @forelse ($categories->items() as $category)
+            @forelse ($categories['data'] as $category)
                 <tr
                     class="hover:bg-slate-50/80 transition-colors group"
                     data-category-id="{{ $category->id }}"
@@ -106,12 +106,12 @@
 </div>
 
 {{-- Pagination --}}
-@if ($categories->lastPage() > 1)
+@if ($categories['pagination']['last_page'] > 1)
     <div class="p-4 border-t border-slate-100 bg-slate-50/50 flex items-center justify-center gap-1.5">
         {{-- Previous --}}
-        @if ($categories->currentPage() > 1)
+        @if ($categories['pagination']['current_page'] > 1)
             <a
-                href="{{ $categories->url($categories->currentPage() - 1) }}"
+                href="{{ request()->fullUrlWithQuery(['page' => $categories['pagination']['current_page'] - 1]) }}"
                 class="pagination-link px-3 py-1.5 rounded-lg text-xs font-semibold bg-white border border-slate-200 text-slate-700 hover:bg-slate-100 transition-all cursor-pointer"
             >
                 &larr; Prev
@@ -119,11 +119,11 @@
         @endif
 
         {{-- Pages --}}
-        @for ($page = 1; $page <= $categories->lastPage(); $page++)
+        @for ($page = 1; $page <= $categories['pagination']['last_page']; $page++)
             <a
-                href="{{ $categories->url($page) }}"
+                href="{{ request()->fullUrlWithQuery(['page' => $page]) }}"
                 class="pagination-link px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all cursor-pointer
-                    {{ $page === $categories->currentPage()
+                    {{ $page === $categories['pagination']['current_page']
                         ? 'bg-indigo-600 border-indigo-600 text-white shadow-xs'
                         : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'
                     }}"
@@ -133,9 +133,9 @@
         @endfor
 
         {{-- Next --}}
-        @if ($categories->currentPage() < $categories->lastPage())
+        @if ($categories['pagination']['current_page'] < $categories['pagination']['last_page'])
             <a
-                href="{{ $categories->url($categories->currentPage() + 1) }}"
+                href="{{ request()->fullUrlWithQuery(['page' => $categories['pagination']['current_page'] + 1]) }}"
                 class="pagination-link px-3 py-1.5 rounded-lg text-xs font-semibold bg-white border border-slate-200 text-slate-700 hover:bg-slate-100 transition-all cursor-pointer"
             >
                 Next &rarr;
